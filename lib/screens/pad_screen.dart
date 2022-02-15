@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import 'package:soundbar/screens/new_sound_picker_screen.dart';
 import 'package:soundbar/sounds_provider.dart';
 import 'package:soundbar/widgets/custom_grid.dart';
+import 'package:soundbar/widgets/my_drawer.dart';
 
 class PadScreen extends StatefulWidget {
   @override
@@ -16,6 +17,7 @@ class _PadScreenState extends State<PadScreen> {
   Widget build(BuildContext context) {
     final soundProvider = Provider.of<SoundsProvider>(context);
     return Scaffold(
+        drawer: MyDrawer(),
         appBar: AppBar(
           title: const Text('Soundpad'),
           actions: [

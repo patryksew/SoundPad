@@ -1,32 +1,104 @@
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
-import 'package:shared_preferences/shared_preferences.dart';
 
 class SoundsProvider with ChangeNotifier {
+  SoundsProvider(this.onlineMode) {
+    fetchFromCloud();
+    uploadSounds();
+  }
+
+  void uploadSounds() {
+    getSounds.where((sound) => !sound.isUploadedToServer).forEach((sound) => addToCloud(sound));
+  }
+
+  Future<bool> Function() onlineMode;
   final soundBox = Hive.box('sounds');
 
-  List get getSounds {
-    return soundBox.values.toList();
+  List<Sound> get getSounds {
+    return soundBox.values.whereType<Sound>().toList();
   }
 
   bool get isNotEmpty {
     return soundBox.isNotEmpty;
   }
 
-  Future<void> add({required File cachedSoundFile, File? cachedImageFile, String? name}) async {
+  Future<void> fetchFromCloud() async {
+    if (!(await onlineMode())) return;
+    List<String> keys = soundBox.keys.whereType<String>().toList();
+    final ref = FirebaseFirestore.instance.collection('/users/${FirebaseAuth.instance.currentUser!.uid}/sounds');
+    var docsToFetch = (await ref.get()).docs.where((doc) => !keys.contains(doc.id));
+    for (var doc in docsToFetch) {
+      addFromCloud(doc);
+    }
+  }
+
+  Future<void> addFromCloud(QueryDocumentSnapshot<Map<String, dynamic>> doc) async {
     Sound newSound = Sound.create();
-    await newSound.init(cachedSoundFile: cachedSoundFile, cachedImageFile: cachedImageFile, name: name);
+    Reference ref = FirebaseStorage.instance.ref().child('user_sounds').child(FirebaseAuth.instance.currentUser!.uid);
+    var imageData = await ref.child(doc.id + '.jpg').getData();
+    Uint8List soundData = (await ref.child(doc.id + doc['soundExtension']).getData())!;
+    await newSound.initFromBytes(
+        soundBytes: soundData,
+        soundExtension: doc['soundExtension'],
+        imageBytes: imageData,
+        name: doc['name'],
+        id: doc.id);
     await soundBox.put(newSound.id, newSound);
     notifyListeners();
   }
 
-  Future<void> delete(int id) async {
-    await soundBox.delete(id);
+  Future<void> add({required File cachedSoundFile, File? cachedImageFile, String? name}) async {
+    Sound newSound = Sound.create();
+    await newSound.init(cachedSoundFile: cachedSoundFile, cachedImageFile: cachedImageFile, name: name);
+    if (await onlineMode()) addToCloud(newSound);
+    await soundBox.put(newSound.id, newSound);
     notifyListeners();
+  }
+
+  void addToCloud(Sound newSound) {
+    Reference ref = FirebaseStorage.instance.ref().child('user_sounds').child(FirebaseAuth.instance.currentUser!.uid);
+    Reference? refImage;
+    final refSound = ref.child(newSound.id + p.extension(newSound.soundPath));
+    refSound.putFile(newSound.soundFile);
+    if (newSound.imageFile != null) {
+      refImage = ref.child(newSound.id + '.jpg');
+      refImage.putFile(newSound.imageFile!);
+    }
+    FirebaseFirestore.instance
+        .collection('/users/${FirebaseAuth.instance.currentUser!.uid}/sounds')
+        .doc(newSound.id)
+        .set({
+      'soundExtension': p.extension(refSound.name),
+      'name': newSound.name,
+    }).then((_) => newSound.isUploadedToServer = true);
+  }
+
+  Future<void> delete(String id) async {
+    Sound sound = await soundBox.get(id);
+    sound.soundFile.delete();
+    sound.imageFile?.delete();
+    await soundBox.delete(id);
+    if (await onlineMode()) deleteFromCloud(id);
+    notifyListeners();
+  }
+
+  Future<void> deleteFromCloud(String id) async {
+    Reference ref = FirebaseStorage.instance.ref().child('user_sounds').child(FirebaseAuth.instance.currentUser!.uid);
+    var doc = FirebaseFirestore.instance.collection('/users/${FirebaseAuth.instance.currentUser!.uid}/sounds').doc(id);
+    String soundExtension = (await doc.get())['soundExtension'];
+    var soundRef = ref.child(id + soundExtension);
+    var imageRef = ref.child(id + '.jpg');
+    imageRef.delete();
+    soundRef.delete();
+    doc.delete();
   }
 }
 
@@ -37,13 +109,13 @@ class Sound {
   @HiveField(0)
   late String name;
   @HiveField(1)
-  late int id;
+  late String id;
   @HiveField(2)
   String? imagePath;
   @HiveField(3)
   late String soundPath;
-
-  final prefs = SharedPreferences.getInstance();
+  @HiveField(4)
+  bool isUploadedToServer = false;
 
   Sound({required this.name, required this.id, required this.soundPath, this.imagePath}) {
     soundFile = File(soundPath);
@@ -52,25 +124,56 @@ class Sound {
     }
   }
 
+  ///Only creates a new instance
   Sound.create();
 
-  Future<void> init({required File cachedSoundFile, File? cachedImageFile, String? name}) async {
-    id = (await prefs).getInt("count") ?? 0;
-    (await prefs).setInt("count", id + 1);
+  Future<void> initFromBytes(
+      {required Uint8List soundBytes,
+      Uint8List? imageBytes,
+      required String soundExtension,
+      required id,
+      String? name}) async {
+    this.id = id;
     if (name != null && name.isNotEmpty) {
       this.name = name;
     } else {
-      this.name = id.toString();
+      this.name = 'Sound';
+    }
+
+    List<Future> futures = [];
+    String directory = (await getApplicationDocumentsDirectory()).path;
+    futures.add(File(directory + '/' + id.toString() + soundExtension).writeAsBytes(soundBytes).then(((val) {
+      soundFile = val;
+      soundPath = val.path;
+    })));
+    if (imageBytes != null) {
+      futures.add(File(directory + '/' + id.toString() + '.jpg').writeAsBytes(imageBytes).then(((val) {
+        imageFile = val;
+        imagePath = val.path;
+      })));
+    }
+    await Future.wait(futures);
+  }
+
+  Future<void> init({required File cachedSoundFile, File? cachedImageFile, String? name}) async {
+    id = DateTime.now().millisecondsSinceEpoch.toString();
+
+    if (name != null && name.isNotEmpty) {
+      this.name = name;
+    } else {
+      this.name = 'Sound';
     }
     List<Future> futures = [];
     String directory = (await getApplicationDocumentsDirectory()).path;
-    futures.add(cachedSoundFile.copy(directory + id.toString() + p.extension(cachedSoundFile.path)).then((value) {
+    futures.add(cachedSoundFile.copy(directory + '/' + id.toString() + p.extension(cachedSoundFile.path)).then((value) {
       soundFile = value;
       soundPath = value.path;
       cachedSoundFile.delete();
     }));
     if (cachedImageFile != null) {
-      futures.add(cachedImageFile.copy(directory + id.toString() + p.extension(cachedImageFile.path)).then((value) {
+      futures.add(cachedImageFile
+          .copy(directory + '/' + id.toString() + '.jpg' /* p.extension(cachedImageFile.path) */)
+          .then((value) {
         imageFile = value;
         imagePath = value.path;
         cachedImageFile.delete();
@@ -92,7 +195,7 @@ class SoundAdapter extends TypeAdapter<Sound> {
     };
     return Sound(
       name: fields[0] as String,
-      id: fields[1] as int,
+      id: fields[1] as String,
       soundPath: fields[3] as String,
       imagePath: fields[2] as String?,
     );
