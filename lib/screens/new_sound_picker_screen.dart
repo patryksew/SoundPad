@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:provider/provider.dart';
 import 'package:soundbar/sounds_provider.dart';
 
@@ -51,7 +52,7 @@ class _NewSoundPickerScreenState extends State<NewSoundPickerScreen> {
                 const SizedBox(width: 20),
                 ElevatedButton(
                     onPressed: () async {
-                      cachedImageFile = await pickFile(FileType.image);
+                      cachedImageFile = await pickFile(FileType.image, extensions: ['jpg', 'png']);
                       setState(() {});
                     },
                     child: const Text('Select image')),
@@ -96,8 +97,14 @@ class _NewSoundPickerScreenState extends State<NewSoundPickerScreen> {
   }
 }
 
-Future<File?> pickFile(FileType type) async {
-  FilePickerResult? result = await FilePicker.platform.pickFiles(type: type);
+Future<File?> pickFile(FileType type, {List<String>? extensions}) async {
+  FilePickerResult? result = await FilePicker.platform
+      .pickFiles(type: extensions == null ? type : FileType.custom, allowedExtensions: extensions);
   if (result == null) return null;
-  return File(result.files.single.path!);
+  File file = File(result.files.single.path!);
+  if (type == FileType.image) {
+    file = (await FlutterImageCompress.compressAndGetFile(file.path, '${file.path}compressed.jpg',
+        quality: 60, minHeight: 600, minWidth: 400))!;
+  }
+  return file;
 }

@@ -43,7 +43,7 @@ class GridItem extends StatelessWidget {
   final File? imageFile;
   final File soundFile;
   final String name;
-  final int id;
+  final String id;
 
   const GridItem({this.imageFile, required this.soundFile, required this.name, required this.id});
 
