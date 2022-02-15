@@ -79,6 +79,9 @@ class _AuthFormState extends State<AuthForm> {
                       _password = val!;
                     },
                   ),
+                  if (!_isLoginMode)
+                    const Text(
+                        'By signing up you agree with the privacy policy available at: https://github.com/patryksew/SoundPad'),
                   const SizedBox(height: 12),
                   if (widget.isLoading) const CircularProgressIndicator(),
                   if (!widget.isLoading)
